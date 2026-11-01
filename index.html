@@ -105,9 +105,30 @@
       </select>
     </div>
     <div class="row-tools">
+      <select id="fPrivacy">
+        <option value="">All visibility</option>
+        <option value="public">Public</option>
+        <option value="unlisted">Unlisted</option>
+        <option value="private">Private</option>
+      </select>
+      <select id="fSize">
+        <option value="">Any size</option>
+        <option value="empty">Empty (0 videos)</option>
+        <option value="small">1–5 videos</option>
+        <option value="big">6+ videos</option>
+      </select>
+      <select id="fKind">
+        <option value="">All types</option>
+        <option value="music">Mostly music</option>
+        <option value="other">Not music</option>
+        <option value="unscanned">Not scanned yet</option>
+      </select>
+    </div>
+    <div class="row-tools">
       <button id="btnAll">Select shown</button>
       <button id="btnNone">Clear</button>
       <button id="btnExport">Export CSV</button>
+      <button id="btnScan">Detect music</button>
       <button id="btnReload">Reload</button>
     </div>
     <p id="summary" class="muted small"></p>
@@ -251,7 +272,13 @@
 
   function render() {
     const q = $('search').value.trim().toLowerCase();
-    shown = sorted(playlists.filter((p) => !q || p.title.toLowerCase().includes(q)));
+    const fp = $('fPrivacy').value, fs = $('fSize').value, fk = $('fKind').value;
+    shown = sorted(playlists.filter((p) =>
+      (!q || p.title.toLowerCase().includes(q)) &&
+      (!fp || p.privacy === fp) &&
+      (!fs || (fs === 'empty' ? p.count === 0 : fs === 'small' ? p.count >= 1 && p.count <= 5 : p.count >= 6)) &&
+      (!fk || (fk === 'unscanned' ? p.kind === undefined : p.kind === fk))
+    ));
     const list = $('list');
     list.textContent = '';
     rowEls.clear();
@@ -270,7 +297,8 @@
       title.className = 'title'; title.textContent = p.title;
       const sub = document.createElement('div');
       sub.className = 'muted small';
-      sub.textContent = `${p.count} video${p.count === 1 ? '' : 's'} · ${p.privacy}`;
+      sub.textContent = `${p.count} video${p.count === 1 ? '' : 's'} · ${p.privacy}` +
+        (p.kind !== undefined && p.count > 0 && p.musicPct != null ? ` · ${p.musicPct}% music` : '');
       meta.append(title, sub);
       row.append(cb, img, meta);
       row.addEventListener('click', (e) => onRowClick(i, e));
@@ -278,7 +306,7 @@
       frag.appendChild(row);
     });
     list.appendChild(frag);
-    $('summary').textContent = `${playlists.length} playlists` + (q ? `, ${shown.length} shown` : '');
+    $('summary').textContent = `${playlists.length} playlists` + (shown.length !== playlists.length ? `, ${shown.length} shown` : '');
     refreshBar();
   }
 
@@ -312,7 +340,7 @@
     $('btnDelete').textContent = selected.size ? `Delete ${selected.size}` : 'Delete';
     $('btnDelete').disabled = busy || selected.size === 0;
     $('btnStop').classList.toggle('hidden', !busy);
-    for (const id of ['btnAll', 'btnNone', 'btnExport', 'btnReload']) $(id).disabled = busy;
+    for (const id of ['btnAll', 'btnNone', 'btnExport', 'btnScan', 'btnReload']) $(id).disabled = busy;
   }
 
   /* ---------- Actions ---------- */
@@ -357,6 +385,46 @@
     refreshBar();
   }
 
+  // YouTube's API doesn't say which app created a playlist, so classify by content:
+  // sample up to 50 videos per playlist and check how many are in YouTube's "Music" category.
+  // Costs about 2 quota units per playlist (reads are cheap; deletes are the expensive part).
+  async function scanMusic() {
+    if (busy) return;
+    const targets = playlists.filter((p) => p.kind === undefined);
+    if (!targets.length) { setStatus('All playlists already scanned'); return; }
+    busy = true; stopFlag = false; statusMsg = ''; refreshBar();
+    let n = 0, abort = '';
+    for (const p of targets) {
+      if (stopFlag) { abort = 'stopped'; break; }
+      n++;
+      setStatus(`Scanning ${n} of ${targets.length}…`);
+      try {
+        if (p.count === 0) { p.kind = 'other'; p.musicPct = 0; continue; }
+        const pi = await api('playlistItems?part=contentDetails&maxResults=50&playlistId=' + encodeURIComponent(p.id));
+        const vids = (pi.items || []).map((i) => i.contentDetails.videoId).filter(Boolean);
+        if (!vids.length) { p.kind = 'other'; p.musicPct = 0; continue; }
+        const v = await api('videos?part=snippet&fields=items(snippet(categoryId))&id=' + vids.join(','));
+        const list = v.items || [];
+        const music = list.filter((x) => x.snippet.categoryId === '10').length;
+        p.musicPct = list.length ? Math.round((100 * music) / list.length) : 0;
+        p.kind = list.length && music / list.length >= 0.6 ? 'music' : 'other';
+      } catch (e) {
+        if (e.reason === 'quotaExceeded' || e.status === 401) {
+          abort = explain(e);
+          if (e.status === 401) token = null;
+          break;
+        }
+        p.kind = 'other'; p.musicPct = null; // unreadable playlist, leave it unclassified as music
+      }
+      await sleep(80);
+    }
+    busy = false;
+    const m = playlists.filter((p) => p.kind === 'music').length;
+    statusMsg = `Scanned · ${m} mostly music` + (abort ? ` · ${abort}` : '');
+    showView();
+    render();
+  }
+
   function exportCsv() {
     const esc = (v) => '"' + String(v).replace(/"/g, '""') + '"';
     const rows = [['title', 'id', 'url', 'videos', 'privacy', 'created']];
@@ -399,6 +467,8 @@
   $('btnNone').addEventListener('click', () => { [...selected].forEach((id) => setRow(id, false)); refreshBar(); });
   $('btnExport').addEventListener('click', exportCsv);
   $('btnReload').addEventListener('click', loadPlaylists);
+  for (const id of ['fPrivacy', 'fSize', 'fKind']) $(id).addEventListener('change', render);
+  $('btnScan').addEventListener('click', scanMusic);
   $('btnStop').addEventListener('click', () => { stopFlag = true; });
   $('btnDelete').addEventListener('click', deleteSelected);
 
