@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Playlist Cleaner</title>
+<style>
+  :root {
+    --bg: #0f0f10; --card: #1a1a1c; --line: #2e2e32; --text: #f1f1f1; --muted: #9a9aa2;
+    --accent: #3ea6ff; --danger: #e5322d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f6f6f7; --card: #ffffff; --line: #dcdce0; --text: #17171a; --muted: #6b6b73; --accent: #0b6fd6; --danger: #cc1f1a; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 16px 14px 140px; padding-top: max(16px, env(safe-area-inset-top)); }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 14px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  button, select, input[type=search], input[type=text] {
+    font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 11px 14px; min-height: 44px;
+  }
+  button { cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+  input[type=text], input[type=search] { width: 100%; }
+  .row-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .row-tools > input { flex: 1 1 200px; }
+  ol.steps { padding-left: 20px; margin: 8px 0; }
+  ol.steps li { margin: 6px 0; }
+  code { background: var(--line); padding: 1px 6px; border-radius: 5px; font-size: 13px; word-break: break-all; }
+  details summary { cursor: pointer; font-weight: 600; min-height: 32px; }
+
+  #list { display: flex; flex-direction: column; gap: 8px; }
+  .item { display: flex; align-items: center; gap: 12px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; user-select: none; }
+  .item.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--card)); }
+  .item.failed { border-color: var(--danger); }
+  .item input { width: 24px; height: 24px; accent-color: var(--accent); flex: none; pointer-events: none; }
+  .thumb { width: 96px; height: 54px; border-radius: 8px; background: var(--line); object-fit: cover; flex: none; }
+  .meta { min-width: 0; }
+  .title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
+    padding: 12px 14px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  #bar .inner { max-width: 780px; margin: 0 auto; display: flex; align-items: center; gap: 10px; }
+  #status { flex: 1; min-width: 0; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Playlist Cleaner</h1>
+    <div>
+      <button id="btnSettings" class="small">Settings</button>
+      <button id="btnSignOut" class="small hidden">Sign out</button>
+    </div>
+  </header>
+
+  <!-- Setup -->
+  <section id="setup" class="card hidden">
+    <strong>One-time setup</strong>
+    <p class="muted small">This app talks to YouTube through your own Google Cloud project, so nothing is shared with anyone else.</p>
+    <details>
+      <summary>How to get a Client ID</summary>
+      <ol class="steps small">
+        <li>Open <code>console.cloud.google.com</code> and create a project.</li>
+        <li>Go to <b>APIs &amp; Services → Library</b> and enable <b>YouTube Data API v3</b>.</li>
+        <li><b>OAuth consent screen</b>: choose External, fill in the basics, and add your own Google account under <b>Test users</b>.</li>
+        <li><b>Credentials → Create credentials → OAuth client ID</b>, type <b>Web application</b>.</li>
+        <li>Under <b>Authorized JavaScript origins</b> add the address this page is hosted at (for example <code id="originHint"></code>), with no path.</li>
+        <li>Copy the Client ID and paste it below.</li>
+      </ol>
+    </details>
+    <p style="margin:12px 0 6px">Client ID</p>
+    <input id="clientId" type="text" placeholder="123456789-abc.apps.googleusercontent.com" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <div style="margin-top:10px"><button id="btnSaveId" class="primary">Save</button></div>
+  </section>
+
+  <!-- Sign in -->
+  <section id="signin" class="card hidden">
+    <p style="margin-top:0">Sign in with the Google account that owns the playlists.</p>
+    <button id="btnSignIn" class="primary">Sign in with Google</button>
+    <p class="muted small" style="margin-bottom:0">Google may say the app is unverified. That's expected for your own project: tap Advanced, then continue.</p>
+  </section>
+
+  <!-- App -->
+  <section id="app" class="hidden">
+    <div class="row-tools">
+      <input id="search" type="search" placeholder="Filter by title…">
+      <select id="sort">
+        <option value="title">Sort: A–Z</option>
+        <option value="titleDesc">Sort: Z–A</option>
+        <option value="countAsc">Sort: fewest videos</option>
+        <option value="countDesc">Sort: most videos</option>
+        <option value="newest">Sort: newest</option>
+        <option value="oldest">Sort: oldest</option>
+      </select>
+    </div>
+    <div class="row-tools">
+      <button id="btnAll">Select shown</button>
+      <button id="btnNone">Clear</button>
+      <button id="btnExport">Export CSV</button>
+      <button id="btnReload">Reload</button>
+    </div>
+    <p id="summary" class="muted small"></p>
+    <div id="list"></div>
+  </section>
+</div>
+
+<div id="bar" class="hidden">
+  <div class="inner">
+    <div id="status" class="small"></div>
+    <button id="btnStop" class="hidden">Stop</button>
+    <button id="btnDelete" class="danger" disabled>Delete</button>
+  </div>
+</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+(() => {
+  'use strict';
+  const SCOPE = 'https://www.googleapis.com/auth/youtube';
+  const API = 'https://www.googleapis.com/youtube/v3/';
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  let clientId = localStorage.getItem('ytpc_client_id') || '';
+  let token = null;
+  let tokenClient = null;
+  let playlists = [];      // {id,title,count,privacy,thumb,published}
+  let shown = [];          // currently displayed, in order
+  let selected = new Set();
+  let lastIdx = null;
+  let busy = false;
+  let stopFlag = false;
+  let statusMsg = '';
+  const rowEls = new Map();
+
+  $('originHint').textContent = location.origin;
+
+  /* ---------- Views ---------- */
+  function showView() {
+    const signedIn = !!token;
+    $('setup').classList.toggle('hidden', !!clientId && !forceSetup);
+    $('signin').classList.toggle('hidden', !clientId || signedIn || forceSetup);
+    $('app').classList.toggle('hidden', !signedIn || forceSetup);
+    $('bar').classList.toggle('hidden', !signedIn || forceSetup);
+    $('btnSignOut').classList.toggle('hidden', !signedIn);
+    $('clientId').value = clientId;
+  }
+  let forceSetup = !clientId;
+
+  /* ---------- Auth (Google Identity Services token flow) ---------- */
+  function initAuth() {
+    if (!clientId || !window.google || !google.accounts) return false;
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId, scope: SCOPE, callback: () => {},
+    });
+    return true;
+  }
+
+  function requestToken() {
+    return new Promise((resolve, reject) => {
+      if (!tokenClient && !initAuth()) return reject(new Error('Google sign-in is still loading, try again in a moment.'));
+      tokenClient.callback = (r) => {
+        if (r.error) return reject(new Error(r.error_description || r.error));
+        token = r.access_token;
+        resolve();
+      };
+      tokenClient.error_callback = (e) => reject(new Error(e.type || 'Sign-in was cancelled'));
+      tokenClient.requestAccessToken({ prompt: token ? '' : 'select_account' });
+    });
+  }
+
+  /* ---------- API ---------- */
+  async function api(path, opts = {}) {
+    const res = await fetch(API + path, {
+      ...opts,
+      headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) },
+    });
+    if (res.status === 204) return null;
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = new Error(data?.error?.message || 'HTTP ' + res.status);
+      err.status = res.status;
+      err.reason = data?.error?.errors?.[0]?.reason;
+      throw err;
+    }
+    return data;
+  }
+
+  async function loadPlaylists() {
+    busy = true; setStatus('Loading playlists…'); refreshBar();
+    playlists = []; selected.clear();
+    try {
+      let pageToken = '';
+      do {
+        const data = await api('playlists?part=snippet,contentDetails,status&mine=true&maxResults=50' +
+          (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''));
+        for (const p of data.items || []) {
+          const th = p.snippet.thumbnails || {};
+          playlists.push({
+            id: p.id,
+            title: p.snippet.title || '(untitled)',
+            count: p.contentDetails?.itemCount ?? 0,
+            privacy: p.status?.privacyStatus || '',
+            thumb: (th.medium || th.default || {}).url || '',
+            published: p.snippet.publishedAt || '',
+          });
+        }
+        pageToken = data.nextPageToken || '';
+        setStatus(`Loading… ${playlists.length} found`);
+      } while (pageToken);
+      statusMsg = '';
+    } catch (e) {
+      statusMsg = explain(e);
+      if (e.status === 401) { token = null; showView(); }
+    }
+    busy = false;
+    render();
+  }
+
+  function explain(e) {
+    if (e.reason === 'quotaExceeded') return 'Daily YouTube API quota used up. It resets at midnight Pacific Time.';
+    if (e.status === 401) return 'Session expired. Please sign in again.';
+    if (e.status === 403) return 'Not allowed: ' + e.message;
+    return e.message || 'Something went wrong';
+  }
+
+  /* ---------- Rendering ---------- */
+  function sorted(list) {
+    const s = $('sort').value;
+    const arr = [...list];
+    const t = (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
+    if (s === 'title') arr.sort(t);
+    if (s === 'titleDesc') arr.sort((a, b) => t(b, a));
+    if (s === 'countAsc') arr.sort((a, b) => a.count - b.count || t(a, b));
+    if (s === 'countDesc') arr.sort((a, b) => b.count - a.count || t(a, b));
+    if (s === 'newest') arr.sort((a, b) => b.published.localeCompare(a.published));
+    if (s === 'oldest') arr.sort((a, b) => a.published.localeCompare(b.published));
+    return arr;
+  }
+
+  function render() {
+    const q = $('search').value.trim().toLowerCase();
+    shown = sorted(playlists.filter((p) => !q || p.title.toLowerCase().includes(q)));
+    const list = $('list');
+    list.textContent = '';
+    rowEls.clear();
+    const frag = document.createDocumentFragment();
+    shown.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'item' + (selected.has(p.id) ? ' sel' : '');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.checked = selected.has(p.id);
+      const img = document.createElement('img');
+      img.className = 'thumb'; img.loading = 'lazy'; img.alt = '';
+      if (p.thumb) img.src = p.thumb;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const title = document.createElement('div');
+      title.className = 'title'; title.textContent = p.title;
+      const sub = document.createElement('div');
+      sub.className = 'muted small';
+      sub.textContent = `${p.count} video${p.count === 1 ? '' : 's'} · ${p.privacy}`;
+      meta.append(title, sub);
+      row.append(cb, img, meta);
+      row.addEventListener('click', (e) => onRowClick(i, e));
+      rowEls.set(p.id, row);
+      frag.appendChild(row);
+    });
+    list.appendChild(frag);
+    $('summary').textContent = `${playlists.length} playlists` + (q ? `, ${shown.length} shown` : '');
+    refreshBar();
+  }
+
+  function setRow(id, on) {
+    if (on) selected.add(id); else selected.delete(id);
+    const row = rowEls.get(id);
+    if (row) {
+      row.classList.toggle('sel', on);
+      row.querySelector('input').checked = on;
+    }
+  }
+
+  function onRowClick(i, e) {
+    if (busy) return;
+    const id = shown[i].id;
+    const on = !selected.has(id);
+    if (e.shiftKey && lastIdx !== null && shown[lastIdx]) {
+      const [lo, hi] = lastIdx < i ? [lastIdx, i] : [i, lastIdx];
+      for (let k = lo; k <= hi; k++) setRow(shown[k].id, on);
+    } else {
+      setRow(id, on);
+    }
+    lastIdx = i;
+    refreshBar();
+  }
+
+  function setStatus(msg) { statusMsg = msg; refreshBar(); }
+
+  function refreshBar() {
+    $('status').textContent = statusMsg || (selected.size ? `${selected.size} selected` : 'Tap playlists to select them');
+    $('btnDelete').textContent = selected.size ? `Delete ${selected.size}` : 'Delete';
+    $('btnDelete').disabled = busy || selected.size === 0;
+    $('btnStop').classList.toggle('hidden', !busy);
+    for (const id of ['btnAll', 'btnNone', 'btnExport', 'btnReload']) $(id).disabled = busy;
+  }
+
+  /* ---------- Actions ---------- */
+  async function deleteSelected() {
+    const ids = [...selected];
+    if (!ids.length || busy) return;
+    let msg = `Permanently delete ${ids.length} playlist${ids.length > 1 ? 's' : ''}?\n\nThis cannot be undone. The videos themselves are not deleted.`;
+    if (ids.length > 190) msg += `\n\nNote: the default daily API quota allows roughly 190 deletes. If it runs out, the rest stay selected and you can continue tomorrow.`;
+    if (!confirm(msg)) return;
+
+    busy = true; stopFlag = false; statusMsg = ''; refreshBar();
+    let done = 0; const failed = [];
+    let abortReason = '';
+
+    for (const id of ids) {
+      if (stopFlag) { abortReason = 'stopped'; break; }
+      setStatus(`Deleting ${done + failed.length + 1} of ${ids.length}…`);
+      try {
+        await api('playlists?id=' + encodeURIComponent(id), { method: 'DELETE' });
+        playlists = playlists.filter((p) => p.id !== id);
+        selected.delete(id);
+        rowEls.get(id)?.remove();
+        rowEls.delete(id);
+        done++;
+      } catch (e) {
+        if (e.reason === 'quotaExceeded' || e.status === 401) { abortReason = explain(e); if (e.status === 401) { token = null; } break; }
+        failed.push({ id, error: explain(e) });
+        rowEls.get(id)?.classList.add('failed');
+        setRow(id, false);
+      }
+      await sleep(250);
+    }
+
+    busy = false;
+    let out = `Deleted ${done}`;
+    if (failed.length) out += ` · ${failed.length} failed`;
+    if (abortReason) out += ` · ${abortReason}`;
+    statusMsg = out;
+    if (failed.length) console.table(failed);
+    $('summary').textContent = `${playlists.length} playlists`;
+    showView();
+    refreshBar();
+  }
+
+  function exportCsv() {
+    const esc = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+    const rows = [['title', 'id', 'url', 'videos', 'privacy', 'created']];
+    for (const p of sorted(playlists)) {
+      rows.push([p.title, p.id, 'https://www.youtube.com/playlist?list=' + p.id, p.count, p.privacy, p.published]);
+    }
+    const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'youtube-playlists-backup.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  /* ---------- Wiring ---------- */
+  $('btnSaveId').addEventListener('click', () => {
+    const v = $('clientId').value.trim();
+    if (!v) return;
+    clientId = v;
+    localStorage.setItem('ytpc_client_id', v);
+    forceSetup = false; tokenClient = null;
+    initAuth();
+    showView();
+  });
+  $('btnSettings').addEventListener('click', () => { forceSetup = !forceSetup || !clientId; showView(); });
+  $('btnSignIn').addEventListener('click', async () => {
+    try {
+      await requestToken();
+      showView();
+      await loadPlaylists();
+    } catch (e) { alert(e.message); }
+  });
+  $('btnSignOut').addEventListener('click', () => {
+    if (token && window.google) google.accounts.oauth2.revoke(token, () => {});
+    token = null; playlists = []; selected.clear(); statusMsg = '';
+    showView();
+  });
+  $('search').addEventListener('input', render);
+  $('sort').addEventListener('change', render);
+  $('btnAll').addEventListener('click', () => { shown.forEach((p) => setRow(p.id, true)); refreshBar(); });
+  $('btnNone').addEventListener('click', () => { [...selected].forEach((id) => setRow(id, false)); refreshBar(); });
+  $('btnExport').addEventListener('click', exportCsv);
+  $('btnReload').addEventListener('click', loadPlaylists);
+  $('btnStop').addEventListener('click', () => { stopFlag = true; });
+  $('btnDelete').addEventListener('click', deleteSelected);
+
+  showView();
+  refreshBar();
+  const wait = setInterval(() => { if (window.google && google.accounts) { clearInterval(wait); initAuth(); } }, 300);
+})();
+</script>
+</body>
+</html>
